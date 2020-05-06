@@ -30,7 +30,7 @@ public class AggregateData implements Serializable{
 		return this.orderBelow10000;
 	}
 
-	public void setOrderBelow20000(orderBelow20000){
+	public void setOrderBelow20000(long orderBelow20000){
 		this.orderAbove20000 = orderAbove20000;
 	}
 
