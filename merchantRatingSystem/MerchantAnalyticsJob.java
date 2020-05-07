@@ -22,15 +22,15 @@ import org.paceWithMe.hadoop.helpers.Transaction;
 
 public class MerchantAnalyticsJob extends Configured implements Tool{
 
+	private final static Logger LOGGER = LoggerFactory.getLogger(MerchantAnalyticsJob.class);
+	static SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
 
-
-
-
-
-
-
-
-
+	public static class MerchantPartitioner extends Partitioner<Text,AggregateWritable>{
+		@Override
+		public int getPartition(Text key,AggregateWritable value,int numPartitions){
+			return Math.abs(key.toString().hashCode()) % numPartitions;
+		}
+	}
 
 
 	private static class TransactionMapper extends Mapper<LongWritable,Text,Text,AggregateWritable>{
@@ -48,17 +48,88 @@ public class MerchantAnalyticsJob extends Configured implements Tool{
 			super.setup(context);
 		}
 
-		@Override
-		protected void map(LongWritable key,Text value,Mapper<LongWritable,Text ,Text,AggregateWritable>.Context context) throws Exception{
+		private void loadMerchantIdNameInCache(String file,Configuration conf){
+			LOGGER.info("file name : " + file);
+			String strRead;
+			BufferedReader br = null;
+			try{
+				FileSystem fileSystem = FileSystem.get(conf);
+				FSDataInputStream open = fileSystem.open(new Path(file));
+				br = new BufferedReader(new InputStreamReader(open));
+				while((strRead = br.readLine() != null)){
+					String line = strRead.toString().replace("\"","");
+					String splitarray[] = line.split(",");
+					merchantIdNameMap.put(splitarray[0].toString(),splitarray[2].toString());
+				}
+			}catch(Exception e){
+				LOGGER.error("exception occured while loading data in cache");
+			}finally{
 
+				try{
+					if(br != null)
+						br.close();
+				}catch(Exception e){
+					LOGGER.error("exception occured while closing the file reader = {}",e);
+				}
+			}
 		}
 
+		@Override
+		protected void map(LongWritable key,Text value,Mapper<LongWritable,Text ,Text,AggregateWritable>.Context context) throws Exception{
+			String line = value.toString().replace("\"","");
 
+			if(line.indexOf("transaction") != -1){
+				return;
+			}
+
+			String split[] = line.split(",");
+			Transaction transaction = new Transaction();
+			transaction.setTxId(split[0]);
+			transaction.setCustomerId(Long.parseLong(split[1]));
+			transaction.setMerchantId(Long.parseLong(split[2]));
+			transaction.setTimestamp(split[3].split(" ")[0].trim());
+			transaction.setInvoiceNumber(split[4].split());
+			transaction.setInvoiceAmount(Float.parseFloat(split[5]));
+			transaction.setSegment(split[6].trim());
+
+			AggregateData aggregatedata = new AggregateData();
+			AggregateWritable aggregateWritable = new AggregateWritable(aggregatedata);
+			if(transaction.getInvoiceAmount() <= 5000)
+				aggregatedata.setOrderBelow5000(1l);
+			else if(transaction.getInvoiceAmount() <= 10000)
+				aggregatedata.setOrderBelow10000(1l);
+			else if(transaction.getInvoiceAmount() <= 20000)
+				aggregatedata.setOrderBelow20000(1l);
+			else
+				aggregatedata.setOrderAbove20000(1l);
+
+
+			aggregatedata.setTotalOrder(1l);
+			String outputkey = merchantIdNameMap.get(transaction.getMerchantId().toString()) + "-" + (split[3].trim().split(" ")[0].trim());
+			context.write(new Text(outputkey),aggregateWritable);
+		}
 
 	}
 
 
 
+	public static class MerchantOrderReducer extends Reducer<Text, AggregateWritable, Text, AggregateWritable>{
+
+		public void reduce(Text key, Iterable<AggregateWritable> values, Context context) throws Exception{
+			AggregateData aggregatedata = new AggregateData();
+			AggregateWritable aggregateWritable = new AggregateWritable(aggregatedata);
+		
+			for(AggregateWritable val: values){
+				aggregatedata.setOrderBelow20000(aggregatedata.getOrderBelow20000() + val.getAggregateData().getOrderBelow20000());
+				aggregatedata.setOrderAbove20000(aggregatedata.getOrderAbove20000() + val.getAggregateData().getOrderAbove20000());
+				aggregatedata.setOrderBelow10000(aggregatedata.getOrderBelow10000() + val.getAggregateData().getOrderBelow10000());
+				aggregatedata.setOrderBelow5000(aggregatedata.getOrderBelow5000() + val.getAggregateData().getOrderBelow5000());
+				aggregatedata.setTotalOrder(aggregatedata.getTotalOrder() + val.getAggregateData().getTotalOrder());
+			}
+
+			context.write(key,aggregateWritable);
+		}
+	}
 
 
 
